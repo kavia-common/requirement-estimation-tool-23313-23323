@@ -6,6 +6,8 @@ from sqlalchemy import select, func
 from src.db.session import init_db, get_session
 from src.db.models import touch_models_metadata, RequirementCatalog, Settings
 from src.db.migrations.bootstrap import run_bootstrap
+from src.api.routers.requirements import router as requirements_router
+from src.api.routers.estimates import router as estimates_router
 
 app = FastAPI(
     title="Estimate Backend API",
@@ -13,10 +15,13 @@ app = FastAPI(
     version="0.1.0",
     openapi_tags=[
         {"name": "health", "description": "Service health and diagnostics"},
+        {"name": "requirements", "description": "Requirement catalog APIs (CRUD, search, pagination)"},
+        {"name": "estimates", "description": "Estimates and items APIs (CRUD, totals)"},
         {"name": "database", "description": "Database and persistence operations"},
     ],
 )
 
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # NOTE: tighten in production
@@ -50,8 +55,17 @@ async def on_startup() -> None:
             await run_bootstrap(session)
 
 
+# Register routers
+app.include_router(requirements_router)
+app.include_router(estimates_router)
+
+
 # PUBLIC_INTERFACE
 @app.get("/", tags=["health"], summary="Health Check")
 def health_check():
-    """Health check endpoint to verify the service is running."""
+    """Health check endpoint to verify the service is running.
+
+    Returns:
+        JSON object with a 'message' field confirming service availability.
+    """
     return {"message": "Healthy"}
