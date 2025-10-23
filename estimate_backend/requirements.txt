@@ -41,3 +41,8 @@ uvicorn==0.34.0
 uvloop==0.21.0
 watchfiles==1.0.5
 websockets==15.0.1
+# Database / ORM
+SQLAlchemy==2.0.36
+aiosqlite==0.20.0
+# SQLModel with Pydantic v2 compatibility (requires SQLAlchemy 2.x)
+sqlmodel==0.0.22
