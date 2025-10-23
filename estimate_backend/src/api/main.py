@@ -1,7 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.db.session import init_db
+from sqlalchemy import select, func
+
+from src.db.session import init_db, get_session
+from src.db.models import touch_models_metadata, RequirementCatalog, Settings
+from src.db.migrations.bootstrap import run_bootstrap
 
 app = FastAPI(
     title="Estimate Backend API",
@@ -26,10 +30,24 @@ app.add_middleware(
 async def on_startup() -> None:
     """Initialize resources such as the database on app startup.
 
-    For local/dev, this will create tables if they do not exist yet.
-    In production, prefer migration workflows (Alembic).
+    Steps:
+    1) Ensure models are imported so metadata is populated.
+    2) Create tables if they do not exist yet (dev/local).
+    3) Run bootstrap seeding if tables are empty.
     """
+    # 1) Ensure models are loaded
+    touch_models_metadata()
+
+    # 2) Create all tables
     await init_db()
+
+    # 3) Seed data if needed
+    async with get_session() as session:
+        # If both settings and catalog have no rows, assume first-time init
+        settings_count = (await session.execute(select(func.count(Settings.id)))).scalar_one() or 0
+        catalog_count = (await session.execute(select(func.count(RequirementCatalog.id)))).scalar_one() or 0
+        if settings_count == 0 or catalog_count == 0:
+            await run_bootstrap(session)
 
 
 # PUBLIC_INTERFACE
