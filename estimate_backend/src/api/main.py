@@ -1,3 +1,6 @@
+import os
+from typing import List
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,10 +24,20 @@ app = FastAPI(
     ],
 )
 
-# CORS configuration
+# CORS configuration using environment variable ALLOW_ORIGINS.
+# Comma-separated list, always ensure http://localhost:3000 is allowed during development.
+def _load_allowed_origins() -> List[str]:
+    raw = os.getenv("ALLOW_ORIGINS", "")
+    # Split by comma and strip spaces; filter out empties
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    # Ensure localhost:3000 is present for frontend dev
+    if "http://localhost:3000" not in origins:
+        origins.append("http://localhost:3000")
+    return origins or ["http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # NOTE: tighten in production
+    allow_origins=_load_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
