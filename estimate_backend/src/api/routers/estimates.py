@@ -23,9 +23,9 @@ from src.api.schemas import (
     EstimateWithItemsRead,
     PaginationMeta,
 )
-from src.db.migrations.bootstrap import DEFAULT_RATE_KEY
-from src.db.models import Estimate, EstimateItem, Settings
+from src.db.models import Estimate, EstimateItem
 from src.db.session import get_session
+from src.services.calculation import recompute_and_persist_totals
 
 router = APIRouter(prefix="/estimates", tags=["estimates"])
 
@@ -35,39 +35,6 @@ def _paginate_params(page: int, per_page: int) -> tuple[int, int]:
     per_page = max(1, min(100, per_page))
     offset = (page - 1) * per_page
     return offset, per_page
-
-
-async def _get_default_rate(session: AsyncSession) -> float:
-    """Fetch default hourly rate from settings."""
-    result = await session.execute(select(Settings).where(Settings.key == DEFAULT_RATE_KEY))
-    s = result.scalar_one_or_none()
-    if not s:
-        return 0.0
-    try:
-        return float(s.value)
-    except Exception:
-        return 0.0
-
-
-def _compute_item_cost(hours: float, rate: float) -> float:
-    return float(round(hours * rate, 2))
-
-
-async def _compute_totals(session: AsyncSession, estimate: Estimate) -> None:
-    """Recalculate and persist total_hours and total_cost."""
-    # Fetch items fresh to ensure alignment
-    items = (await session.execute(select(EstimateItem).where(EstimateItem.estimate_id == estimate.id))).scalars().all()
-    total_hours = sum(i.hours or 0.0 for i in items)
-
-    # rate resolution: item.rate -> estimate.hourly_rate -> default rate
-    default_rate = await _get_default_rate(session)
-    total_cost = 0.0
-    for i in items:
-        rate = i.rate if i.rate is not None else (estimate.hourly_rate if estimate.hourly_rate else default_rate)
-        total_cost += _compute_item_cost(i.hours or 0.0, rate or 0.0)
-
-    estimate.total_hours = float(round(total_hours, 2))
-    estimate.total_cost = float(round(total_cost, 2))
 
 
 # PUBLIC_INTERFACE
@@ -150,12 +117,16 @@ async def create_estimate(payload: EstimateCreate, session: AsyncSession = Depen
             )
             session.add(item)
 
-    await _compute_totals(session, est)
+    await recompute_and_persist_totals(session, est)
     await session.commit()
     await session.refresh(est)
 
     items = (
-        await session.execute(select(EstimateItem).where(EstimateItem.estimate_id == est.id).order_by(EstimateItem.sequence.asc(), EstimateItem.id.asc()))
+        await session.execute(
+            select(EstimateItem)
+            .where(EstimateItem.estimate_id == est.id)
+            .order_by(EstimateItem.sequence.asc(), EstimateItem.id.asc())
+        )
     ).scalars().all()
 
     return EstimateWithItemsRead(
@@ -200,7 +171,11 @@ async def get_estimate(estimate_id: int, session: AsyncSession = Depends(get_ses
         raise HTTPException(status_code=404, detail="Estimate not found")
 
     items = (
-        await session.execute(select(EstimateItem).where(EstimateItem.estimate_id == estimate_id).order_by(EstimateItem.sequence.asc(), EstimateItem.id.asc()))
+        await session.execute(
+            select(EstimateItem)
+            .where(EstimateItem.estimate_id == estimate_id)
+            .order_by(EstimateItem.sequence.asc(), EstimateItem.id.asc())
+        )
     ).scalars().all()
 
     return EstimateWithItemsRead(
@@ -255,7 +230,7 @@ async def update_estimate(
     if payload.hourly_rate is not None:
         est.hourly_rate = payload.hourly_rate
 
-    await _compute_totals(session, est)
+    await recompute_and_persist_totals(session, est)
     await session.commit()
     await session.refresh(est)
 
@@ -340,7 +315,7 @@ async def add_item(
     session.add(item)
 
     await session.flush()
-    await _compute_totals(session, est)
+    await recompute_and_persist_totals(session, est)
     await session.commit()
     await session.refresh(item)
 
@@ -393,7 +368,7 @@ async def update_item(
     if payload.catalog_item_id is not None:
         item.catalog_item_id = payload.catalog_item_id
 
-    await _compute_totals(session, est)
+    await recompute_and_persist_totals(session, est)
     await session.commit()
     await session.refresh(item)
 
@@ -433,6 +408,39 @@ async def delete_item(
         raise HTTPException(status_code=404, detail="Item not found")
 
     await session.delete(item)
-    await _compute_totals(session, est)
+    await recompute_and_persist_totals(session, est)
     await session.commit()
     return None
+
+
+# PUBLIC_INTERFACE
+@router.post(
+    "/{estimate_id}/submit",
+    response_model=EstimateRead,
+    summary="Submit estimate",
+    description="Recalculate totals based on current items and persist the results.",
+)
+async def submit_estimate(estimate_id: int, session: AsyncSession = Depends(get_session)):
+    """Recalculate and persist totals for an estimate, returning updated totals.
+
+    This endpoint can be used to 'finalize' or refresh totals after edits.
+    """
+    est = await session.get(Estimate, estimate_id)
+    if not est:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+
+    await recompute_and_persist_totals(session, est)
+    await session.commit()
+    await session.refresh(est)
+
+    return EstimateRead(
+        id=est.id,
+        name=est.name,
+        client=est.client,
+        notes=est.notes,
+        hourly_rate=est.hourly_rate,
+        total_hours=est.total_hours,
+        total_cost=est.total_cost,
+        created_at=est.created_at,
+        updated_at=est.updated_at,
+    )
